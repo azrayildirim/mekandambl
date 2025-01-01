@@ -7,22 +7,20 @@ import {
   Image, 
   TouchableOpacity, 
   Dimensions, 
-  Alert 
+  Alert, 
+  ActivityIndicator 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { addVisitedPlace } from '../services/placesService';
+import { addVisitedPlace, getPlaceDetails } from '../services/placesService';
 import { auth, db } from '../config/firebase';
 import { getDoc, doc } from 'firebase/firestore';
 import * as Location from 'expo-location';
-
-type RootStackParamList = {
-  PlaceDetails: {
-    place: Place;
-  };
-};
+import { RootStackParamList } from '../types/navigation';
+import { ref, onValue } from 'firebase/database';
+import { database } from '../config/firebase';
 
 type PlaceDetailsRouteProp = RouteProp<RootStackParamList, 'PlaceDetails'>;
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
@@ -58,14 +56,39 @@ interface Place {
 }
 
 export default function PlaceDetailsScreen() {
-  const navigation = useNavigation<NavigationProp>();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<PlaceDetailsRouteProp>();
-  const { place } = route.params;
+  const { placeId } = route.params;
+  const [place, setPlace] = useState<Place | null>(null);
   const [isVisited, setIsVisited] = useState(false);
   const [isNearby, setIsNearby] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeUsers, setActiveUsers] = useState<Array<{
+    id: string;
+    name: string;
+    photoURL: string;
+    isOnline: boolean;
+  }>>([]);
 
-  // Kullanıcının bu mekanı daha önce ziyaret edip etmediğini kontrol et
+  // Mekan bilgilerini yükle
   useEffect(() => {
+    const loadPlace = async () => {
+      try {
+        const placeData = await getPlaceDetails(placeId);
+        setPlace(placeData);
+      } catch (error) {
+        console.error('Error loading place:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadPlace();
+  }, [placeId]);
+
+  // Ziyaret durumunu kontrol et
+  useEffect(() => {
+    if (!place) return;
+    
     const checkIfVisited = async () => {
       if (!auth.currentUser) return;
       const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
@@ -73,10 +96,12 @@ export default function PlaceDetailsScreen() {
       setIsVisited(visitedPlaces.includes(place.id));
     };
     checkIfVisited();
-  }, [place.id]);
+  }, [place?.id]);
 
-  // Kullanıcının mekana yakın olup olmadığını kontrol et
+  // Konum kontrolü
   useEffect(() => {
+    if (!place) return;
+
     const checkLocation = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
@@ -90,7 +115,6 @@ export default function PlaceDetailsScreen() {
           place.coordinate.longitude
         );
 
-        // 100 metre içindeyse yakın kabul et
         setIsNearby(distance <= 100);
       } catch (error) {
         console.error('Error checking location:', error);
@@ -98,7 +122,71 @@ export default function PlaceDetailsScreen() {
     };
 
     checkLocation();
-  }, [place.coordinate]);
+  }, [place?.coordinate]);
+
+  // Aktif kullanıcıları gerçek zamanlı dinle
+  useEffect(() => {
+    if (!placeId) return;
+
+    // Realtime Database'den aktif kullanıcıları dinle
+    const activeUsersRef = ref(database, `places/${placeId}/activeUsers`);
+    const unsubscribe = onValue(activeUsersRef, async (snapshot) => {
+      try {
+        if (!snapshot.exists()) {
+          setActiveUsers([]);
+          return;
+        }
+
+        // Aktif kullanıcı ID'lerini al
+        const activeUserIds = Object.keys(snapshot.val());
+        
+        // Her kullanıcı için Firestore'dan güncel bilgileri al
+        const userDocs = await Promise.all(
+          activeUserIds.map(userId => 
+            getDoc(doc(db, 'users', userId))
+          )
+        );
+
+        // Kullanıcı bilgilerini birleştir
+        const updatedUsers = userDocs
+          .filter(doc => doc.exists())
+          .map(doc => {
+            const userData = doc.data();
+            return {
+              id: doc.id,
+              name: userData.name || 'İsimsiz Kullanıcı',
+              photoURL: userData.photoURL || null,
+              isOnline: true,
+              lastSeen: userData.lastSeen || null
+            };
+          });
+
+        console.log('Active users updated:', updatedUsers); // Debug için
+        setActiveUsers(updatedUsers);
+        
+      } catch (error) {
+        console.error('Error updating active users:', error);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [placeId]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#8A2BE2" />
+      </View>
+    );
+  }
+
+  if (!place) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text>Mekan bulunamadı</Text>
+      </View>
+    );
+  }
 
   // Mesafe hesaplama fonksiyonu (metre cinsinden)
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -179,21 +267,26 @@ export default function PlaceDetailsScreen() {
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>
-              Şu anda Mekanda ({place.users.length})
+              Şu anda Mekanda ({activeUsers.length})
             </Text>
             <ScrollView 
               horizontal 
               showsHorizontalScrollIndicator={false}
               style={styles.usersScroll}
             >
-              {place.users.map(user => (
-                <View key={user.id} style={styles.userCard}>
+              {activeUsers.map(user => (
+                <TouchableOpacity
+                  key={user.id}
+                  style={styles.userCard}
+                  onPress={() => navigation.navigate('UserProfileScreen', { userId: user.id })}
+                >
                   <Image 
-                    source={{ uri: user.photoURL }} 
+                    source={{ uri: user.photoURL || undefined }} 
                     style={styles.userPhoto}
+                    defaultSource={require('../assets/images/default-avatar.png')}
                   />
                   <Text style={styles.userName}>{user.name}</Text>
-                </View>
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -454,5 +547,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 }); 

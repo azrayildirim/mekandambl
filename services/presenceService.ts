@@ -1,5 +1,6 @@
-import { ref, onValue, set, onDisconnect, serverTimestamp } from 'firebase/database';
+import { ref, onValue, set, onDisconnect, serverTimestamp, doc, updateDoc } from 'firebase/database';
 import { database } from '../config/firebase';
+import { db } from '../config/firebase';
 
 interface PresenceData {
   isOnline: boolean;
@@ -76,4 +77,25 @@ export const subscribeToUserPresence = (
     const data = snapshot.val() as PresenceData;
     onUpdate(data);
   });
+};
+
+export const cleanupUserPresence = async (userId: string) => {
+  try {
+    const userStatusRef = ref(database, `status/${userId}`);
+    const userPlaceRef = ref(database, `userPlaces/${userId}`);
+    
+    // Status ve mekan bilgilerini temizle
+    await set(userStatusRef, null);
+    await set(userPlaceRef, null);
+    
+    // Firestore'daki aktif mekan bilgisini temizle
+    const userDoc = doc(db, 'users', userId);
+    await updateDoc(userDoc, {
+      activePlace: null,
+      lastSeen: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Error cleaning up user presence:', error);
+    throw error;
+  }
 }; 

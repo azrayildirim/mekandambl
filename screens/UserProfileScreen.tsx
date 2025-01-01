@@ -246,7 +246,7 @@ export default function UserProfileScreen({ route }: { route: UserProfileScreenR
             <TouchableOpacity
               key={place.id}
               style={styles.placeItem}
-              onPress={() => navigation.navigate('PlaceDetails', { place })}
+              onPress={() => navigation.navigate('PlaceDetails', { placeId: place.id })}
             >
               <Image 
                 source={{ uri: place.photos[0] }} 

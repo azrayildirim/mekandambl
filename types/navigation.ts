@@ -1,5 +1,3 @@
-
-
 export type RootStackParamList = {
   Home: undefined;
   SignIn: undefined;
@@ -7,5 +5,8 @@ export type RootStackParamList = {
   UserProfileScreen: { userId: string };
   SignUp: undefined;
   Profile: undefined;
-  PlaceDetails: { place: any };
+  PlaceDetails: { placeId: string };
+  Notifications: undefined;
+  Messages: undefined;
+  ChatRoom: { chatId: string; userId: string };
 }; 

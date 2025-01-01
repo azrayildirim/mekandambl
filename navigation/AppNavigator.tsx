@@ -6,6 +6,8 @@ import UserProfileScreen from '../screens/UserProfileScreen';
 import SignUpScreen from '../screens/SignUpScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import PlaceDetailsScreen from '../screens/PlaceDetailsScreen';
+import NotificationsScreen from '../screens/NotificationsScreen';
+import MessagesScreen from '../screens/MessagesScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -38,6 +40,24 @@ const AppNavigator = () => {
       />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="PlaceDetails" component={PlaceDetailsScreen} />
+      <Stack.Screen 
+        name="Notifications"
+        component={NotificationsScreen}
+        options={{ 
+          title: 'Bildirimler',
+          headerShown: true,
+          headerBackTitle: 'Geri'
+        }}
+      />
+      <Stack.Screen
+        name="Messages"
+        component={MessagesScreen}
+        options={{ 
+          title: 'Mesajlar',
+          headerShown: true,
+          headerBackTitle: 'Geri'
+        }}
+      />
     </Stack.Navigator>
   );
 };

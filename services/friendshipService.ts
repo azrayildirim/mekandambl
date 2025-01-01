@@ -1,5 +1,6 @@
 import { db } from '../config/firebase';
 import { doc, getDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { createNotification } from './notificationService';
 
 export interface FriendshipStatus {
   areFriends: boolean;
@@ -23,6 +24,21 @@ export const sendFriendRequest = async (senderId: string, receiverId: string) =>
         userId: receiverId,
         timestamp: new Date().toISOString()
       })
+    });
+
+    // Bildirim oluştur
+    const senderDoc = await getDoc(doc(db, 'users', senderId));
+    const senderData = senderDoc.data();
+
+    await createNotification({
+      type: 'FRIEND_REQUEST',
+      senderId,
+      senderName: senderData?.name || 'İsimsiz Kullanıcı',
+      senderPhoto: senderData?.photoURL,
+      receiverId,
+      data: {
+        message: 'size arkadaşlık isteği gönderdi'
+      }
     });
   } catch (error) {
     console.error('Error sending friend request:', error);

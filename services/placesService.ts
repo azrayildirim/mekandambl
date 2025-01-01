@@ -83,38 +83,89 @@ export const subscribePlaces = (
 };
 
 export const getPlaceDetails = async (placeId: string): Promise<Place> => {
-  const placeDoc = await getDoc(doc(db, 'places', placeId));
-  if (!placeDoc.exists()) {
-    throw new Error('Place not found');
+  try {
+    // Firestore'dan mekan bilgilerini al
+    const placeDoc = await getDoc(doc(db, 'places', placeId));
+    if (!placeDoc.exists()) {
+      throw new Error('Place not found');
+    }
+    
+    const data = placeDoc.data();
+    const location = data.location as GeoPoint;
+
+    // Realtime Database'den aktif kullanıcıları al
+    const activeUsersRef = ref(database, `places/${placeId}/activeUsers`);
+    const activeUsersSnapshot = await get(activeUsersRef);
+    const activeUsers: any[] = [];
+
+    if (activeUsersSnapshot.exists()) {
+      const activeUserIds = Object.keys(activeUsersSnapshot.val());
+      
+      // Her aktif kullanıcının durumunu kontrol et
+      const userPromises = activeUserIds.map(async (userId) => {
+        // Önce auth durumunu kontrol et
+        const userStatusRef = ref(database, `status/${userId}`);
+        const userStatusSnapshot = await get(userStatusRef);
+        
+        // Kullanıcı çevrimiçi değilse veya status verisi yoksa, null döndür
+        if (!userStatusSnapshot.exists() || !userStatusSnapshot.val().isOnline) {
+          // Kullanıcıyı mekan listesinden kaldır
+          await set(ref(database, `places/${placeId}/activeUsers/${userId}`), null);
+          return null;
+        }
+
+        // Kullanıcı bilgilerini Firestore'dan al
+        const userDoc = await getDoc(doc(db, 'users', userId));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          return {
+            id: userId,
+            name: userData.name || 'İsimsiz Kullanıcı',
+            photoURL: userData.photoURL || null,
+            isOnline: true
+          };
+        }
+        return null;
+      });
+
+      const users = await Promise.all(userPromises);
+      activeUsers.push(...users.filter(user => user !== null));
+    }
+    
+    return {
+      id: placeDoc.id,
+      name: data.name,
+      coordinate: {
+        latitude: location.latitude,
+        longitude: location.longitude
+      },
+      description: data.description,
+      rating: data.rating,
+      address: data.address,
+      photos: data.photos || [],
+      reviews: data.reviews || [],
+      users: activeUsers,
+      openingHours: data.openingHours
+    };
+  } catch (error) {
+    console.error('Error fetching place details:', error);
+    throw error;
   }
-  
-  const data = placeDoc.data();
-  const location = data.location as GeoPoint;
-  
-  return {
-    id: placeDoc.id,
-    name: data.name,
-    coordinate: {
-      latitude: location.latitude,
-      longitude: location.longitude
-    },
-    description: data.description,
-    rating: data.rating,
-    address: data.address,
-    photos: data.photos || [],
-    reviews: data.reviews || [],
-    users: data.activeUsers || []
-  };
 };
 
 export const updateActivePlaceUsers = async (placeId: string, userId: string, isEntering: boolean) => {
   try {
+    // Kullanıcı ID'si yoksa işlemi iptal et
+    if (!userId) {
+      console.log('No user ID provided, skipping update');
+      return;
+    }
+
     const userStatusRef = ref(database, `places/${placeId}/activeUsers/${userId}`);
     
     if (isEntering) {
       await set(userStatusRef, {
-        id: userId,
-        timestamp: serverTimestamp()
+        timestamp: Date.now()
       });
     } else {
       await set(userStatusRef, null);

@@ -14,6 +14,7 @@ import { auth } from '../config/firebase';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
+import { cleanupUserPresence } from '../services/presenceService';
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -48,6 +49,19 @@ export default function SignInScreen() {
       );
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      const userId = auth.currentUser?.uid;
+      if (userId) {
+        await cleanupUserPresence(userId);
+      }
+      await auth.signOut();
+      navigation.navigate('NearbyPlaces');
+    } catch (error) {
+      console.error('Error signing out:', error);
     }
   };
 

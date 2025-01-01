@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Alert, Dimensions, Image, Text, ScrollView, TouchableOpacity, Animated, PanResponder, Modal, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Alert, Dimensions, Image, Text, ScrollView, TouchableOpacity, Animated, PanResponder, Modal, ActivityIndicator, FlatList } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { auth } from '../config/firebase';
@@ -17,6 +17,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { RootStackParamList } from '../types/navigation';
+import { Notification, subscribeToNotifications, markNotificationAsRead } from '../services/notificationService';
+import { Chat, subscribeToChats } from '../services/messageService';
 
 const { width, height } = Dimensions.get('window');
 const ASPECT_RATIO = width / height;
@@ -178,6 +180,10 @@ export default function NearbyPlaces() {
     rating: 0,
     comment: ''
   });
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showMessages, setShowMessages] = useState(false);
+  const [chats, setChats] = useState<Chat[]>([]);
   
   // Pan Responder'ı oluştur
   const panResponder = useRef(
@@ -422,9 +428,12 @@ export default function NearbyPlaces() {
     const handleUserLeave = async () => {
       if (activePlace && auth.currentUser) {
         await updateActivePlaceUsers(activePlace, auth.currentUser.uid, false);
+        await AsyncStorage.removeItem(ACTIVE_PLACE_KEY);
+        await AsyncStorage.removeItem(LAST_CONFIRM_KEY);
       }
     };
 
+    // Uygulama kapanırken veya kullanıcı çıkış yaparken temizlik yap
     return () => {
       handleUserLeave();
     };
@@ -432,40 +441,67 @@ export default function NearbyPlaces() {
 
   // Auth state'ini dinle
   useEffect(() => {
-    // Auth state değişikliklerini dinle
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        setCurrentUser(null);
-        return;
+        // Kullanıcı çıkış yaptığında
+        try {
+          // Aktif mekan varsa temizle
+          if (activePlace) {
+            await updateActivePlaceUsers(activePlace, '', false); // activePlace zaten string
+          }
+          
+          // Tüm state'leri sıfırla
+          setActivePlace(null);
+          setLastConfirmTime(0);
+          setHasConfirmedOnce(false);
+          setCurrentUser(null);
+          
+          // AsyncStorage'ı temizle
+          await AsyncStorage.multiRemove([ACTIVE_PLACE_KEY, LAST_CONFIRM_KEY]);
+        } catch (error) {
+          console.error('Error cleaning up user data:', error);
+        }
       }
-
-      // Kullanıcı giriş yaptığında
-      setCurrentUser({
-        photoURL: user.photoURL,
-        displayName: user.displayName
-      });
-
-      // Presence sistemini başlat
-      const userStatusRef = setupPresence(user.uid);
-
-      // Mevcut konumu kullanarak mekan kontrolü yap
-      if (location) {
-        handleLocationUpdate(location);
-      }
-
-      return () => {
-        // Cleanup
-        set(userStatusRef, {
-          isOnline: false,
-          lastSeen: serverTimestamp()
-        });
-      };
     });
 
     return () => {
+      if (activePlace) {
+        updateActivePlaceUsers(activePlace, auth.currentUser?.uid || '', false)
+          .catch(error => console.error('Error cleaning up active place:', error));
+      }
       unsubscribeAuth();
     };
-  }, [location]); // location'ı dependency olarak ekle
+  }, [activePlace]);
+
+  // Mekan durumunu kontrol et
+  useEffect(() => {
+    const checkActivePlace = async () => {
+      if (!auth.currentUser) {
+        // Kullanıcı yoksa mekan bilgilerini temizle
+        setActivePlace(null);
+        setLastConfirmTime(0);
+        setHasConfirmedOnce(false);
+        await AsyncStorage.multiRemove([ACTIVE_PLACE_KEY, LAST_CONFIRM_KEY]);
+        return;
+      }
+
+      try {
+        const storedPlaceId = await AsyncStorage.getItem(ACTIVE_PLACE_KEY);
+        if (storedPlaceId) {
+          setActivePlace(storedPlaceId);
+          const lastConfirm = await AsyncStorage.getItem(LAST_CONFIRM_KEY);
+          if (lastConfirm) {
+            setLastConfirmTime(parseInt(lastConfirm));
+            setHasConfirmedOnce(true);
+          }
+        }
+      } catch (error) {
+        console.error('Error checking active place:', error);
+      }
+    };
+
+    checkActivePlace();
+  }, [auth.currentUser]);
 
   useEffect(() => {
     if (auth.currentUser) {
@@ -512,22 +548,29 @@ export default function NearbyPlaces() {
       const unsubscribe = onValue(placeUsersRef, async (snapshot) => {
         const activeUserIds = snapshot.val() || {};
         
-        // Her aktif kullanıcının detaylarını Firestore'dan al
-        const userPromises = Object.keys(activeUserIds).map(async (userId) => {
-          const userDoc = await getDoc(doc(db, 'users', userId));
-          const userData = userDoc.data();
-          return {
-            id: userId,
-            name: userData?.name || 'İsimsiz Kullanıcı',
-            photoURL: userData?.photoURL || '',
-            status: userData?.status || 'Merhaba! Mekanda kullanıyorum.',
-            lastSeen: new Date().toISOString(),
-            allowMessages: userData?.allowMessages ?? true,
-            isOnline: true
-          };
-        });
-
-        const activeUsers = await Promise.all(userPromises);
+        // Sadece son 30 dakika içinde aktif olan kullanıcıları filtrele
+        const now = Date.now();
+        const activeUsers = await Promise.all(
+          Object.entries(activeUserIds)
+            .filter(([_, data]: [string, any]) => {
+              const timestamp = data.timestamp;
+              // 30 dakikadan eski kayıtları filtrele
+              return timestamp && (now - timestamp) < 30 * 60 * 1000;
+            })
+            .map(async ([userId, data]: [string, any]) => {
+              const userDoc = await getDoc(doc(db, 'users', userId));
+              const userData = userDoc.data();
+              return {
+                id: userId,
+                name: userData?.name || 'İsimsiz Kullanıcı',
+                photoURL: userData?.photoURL || '',
+                status: userData?.status || 'Merhaba! Mekanda kullanıyorum.',
+                lastSeen: data.timestamp,
+                allowMessages: userData?.allowMessages ?? true,
+                isOnline: true
+              };
+            })
+        );
         
         // Mekan bilgilerini güncelle
         setSelectedPlace(prev => prev ? {
@@ -539,6 +582,50 @@ export default function NearbyPlaces() {
       return () => unsubscribe();
     }
   }, [selectedPlace?.id]);
+
+  useEffect(() => {
+    if (!auth.currentUser) return;
+
+    const unsubscribe = subscribeToNotifications(
+      auth.currentUser.uid,
+      (updatedNotifications) => {
+        setNotifications(updatedNotifications);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleNotificationPress = async (notification: Notification) => {
+    await markNotificationAsRead(notification.id);
+    setShowNotifications(false);
+
+    switch (notification.type) {
+      case 'FRIEND_REQUEST':
+        navigation.navigate('UserProfileScreen', { userId: notification.senderId });
+        break;
+      case 'PLACE_CHECK_IN':
+      case 'PLACE_REVIEW':
+        if (notification.data.placeId) {
+          navigation.navigate('PlaceDetails', { placeId: notification.data.placeId });
+        }
+        break;
+    }
+  };
+
+  // Mesajları dinle
+  useEffect(() => {
+    if (!auth.currentUser) return;
+
+    const unsubscribe = subscribeToChats(
+      auth.currentUser.uid,
+      (updatedChats) => {
+        setChats(updatedChats);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   if (!location) {
     return (
@@ -578,6 +665,177 @@ export default function NearbyPlaces() {
 
   return (
     <View style={styles.container}>
+      <View style={styles.navbar}>
+        {auth.currentUser ? (
+          <>
+            <TouchableOpacity 
+              style={styles.profileButton}
+              onPress={() => navigation.navigate('Profile')}
+            >
+              {auth.currentUser.photoURL ? (
+                <Image 
+                  source={{ uri: auth.currentUser.photoURL }} 
+                  style={styles.profilePhoto}
+                />
+              ) : (
+                <View style={styles.profilePhotoPlaceholder}>
+                  <Text style={styles.profileInitials}>
+                    {auth.currentUser.displayName?.charAt(0) || '?'}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <View style={styles.navbarRight}>
+              <TouchableOpacity 
+                style={styles.iconButton}
+                onPress={() => setShowMessages(!showMessages)}
+              >
+                <View style={styles.iconContainer}>
+                  <Ionicons name="chatbubble" size={24} color="#8A2BE2" />
+                  {chats.filter(chat => chat.unreadCount > 0).length > 0 && (
+                    <View style={styles.badge}>
+                      <Text style={styles.badgeText}>
+                        {chats.filter(chat => chat.unreadCount > 0).length}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.iconButton}
+                onPress={() => setShowNotifications(!showNotifications)}
+              >
+                <View style={styles.iconContainer}>
+                  <Ionicons name="notifications" size={24} color="#8A2BE2" />
+                  {notifications.filter(n => !n.read).length > 0 && (
+                    <View style={styles.badge}>
+                      <Text style={styles.badgeText}>
+                        {notifications.filter(n => !n.read).length}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <TouchableOpacity 
+            style={styles.signInButton}
+            onPress={() => navigation.navigate('SignIn')}
+          >
+            <Ionicons name="log-in-outline" size={24} color="#8A2BE2" />
+            <Text style={styles.signInButtonText}>Giriş Yap</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {showNotifications && (
+        <View style={styles.notificationsDropdown}>
+          {notifications.length > 0 ? (
+            <>
+              <FlatList
+                data={notifications.slice(0, 5)} // Son 5 bildirimi göster
+                renderItem={({ item: notification }) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.notificationItem,
+                      !notification.read && styles.unreadNotification
+                    ]}
+                    onPress={() => handleNotificationPress(notification)}
+                  >
+                    <Image
+                      source={{ uri: notification.senderPhoto }}
+                      style={styles.notificationPhoto}
+                      defaultSource={require('../assets/images/default-avatar.png')}
+                    />
+                    <View style={styles.notificationContent}>
+                      <Text style={styles.notificationText} numberOfLines={2}>
+                        <Text style={styles.notificationSender}>
+                          {notification.senderName}
+                        </Text>
+                        {' '}
+                        {notification.data.message}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                keyExtractor={item => item.id}
+              />
+              <TouchableOpacity
+                style={styles.seeAllButton}
+                onPress={() => {
+                  setShowNotifications(false);
+                  navigation.navigate('Notifications');
+                }}
+              >
+                <Text style={styles.seeAllText}>Tümünü Gör</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <View style={styles.emptyNotifications}>
+              <Text style={styles.emptyText}>Bildirim yok</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {showMessages && (
+        <View style={styles.notificationsDropdown}>
+          {chats.filter(chat => chat.unreadCount > 0).slice(0, 5).length > 0 ? (
+            <>
+              <FlatList
+                data={chats.filter(chat => chat.unreadCount > 0).slice(0, 5)}
+                renderItem={({ item: chat }) => (
+                  <TouchableOpacity
+                    style={styles.notificationItem}
+                    onPress={() => {
+                      setShowMessages(false);
+                      navigation.navigate('ChatRoom', { 
+                        chatId: chat.id, 
+                        userId: chat.otherUser.id 
+                      });
+                    }}
+                  >
+                    <Image
+                      source={{ uri: chat.otherUser.photoURL || undefined }}
+                      style={styles.notificationPhoto}
+                      defaultSource={require('../assets/images/default-avatar.png')}
+                    />
+                    <View style={styles.notificationContent}>
+                      <Text style={styles.notificationSender}>
+                        {chat.otherUser.name}
+                      </Text>
+                      <Text style={styles.notificationText} numberOfLines={1}>
+                        {chat.lastMessage?.text}
+                      </Text>
+                    </View>
+                    <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadCount}>{chat.unreadCount}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                keyExtractor={item => item.id}
+              />
+              <TouchableOpacity
+                style={styles.seeAllButton}
+                onPress={() => {
+                  setShowMessages(false);
+                  navigation.navigate('Messages');
+                }}
+              >
+                <Text style={styles.seeAllText}>Tüm Mesajlar</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <View style={styles.emptyNotifications}>
+              <Text style={styles.emptyText}>Okunmamış mesajınız yok</Text>
+            </View>
+          )}
+        </View>
+      )}
+
       <MapView
         provider={PROVIDER_GOOGLE}
         style={styles.map}
@@ -623,36 +881,6 @@ export default function NearbyPlaces() {
         ))}
       </MapView>
 
-      <View style={styles.topButtonsContainer}>
-        {currentUser ? (
-          <TouchableOpacity 
-            style={styles.profileButton}
-            onPress={() => navigation.navigate('Profile')}
-          >
-            {currentUser.photoURL ? (
-              <Image 
-                source={{ uri: currentUser.photoURL }} 
-                style={styles.profilePhoto}
-              />
-            ) : (
-              <View style={styles.profilePhotoPlaceholder}>
-                <Text style={styles.profileInitials}>
-                  {currentUser.displayName?.charAt(0) || 'U'}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity 
-            style={styles.signUpButton}
-            onPress={() => navigation.navigate('SignIn')}
-          >
-            <Ionicons name="person" size={24} color="#8A2BE2" />
-            <Text style={styles.signUpButtonText}>Giriş Yap</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-
       {selectedPlace && (
         <Animated.View 
           style={[
@@ -674,7 +902,7 @@ export default function NearbyPlaces() {
               style={styles.placeDetailsButton}
               onPress={() => {
                 setShowPlaceDetails(false);
-                navigation.navigate('PlaceDetails', { place: selectedPlace });
+                navigation.navigate('PlaceDetails', { placeId: selectedPlace.id });
               }}
             >
               <Ionicons name="compass-outline" size={18} color="#8A2BE2" />
@@ -1100,61 +1328,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  topButtonsContainer: {
-    position: 'absolute',
-    top: 40,
-    right: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  signUpButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'white',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 25,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  signUpButtonText: {
-    color: '#8A2BE2',
-    marginLeft: 8,
-    fontSize: 16,
-    fontWeight: '600',
-  },
   profileButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     overflow: 'hidden',
+    backgroundColor: '#f0f0f0',
+    borderWidth: 2,
+    borderColor: '#fff',
   },
   profilePhoto: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: '100%',
+    height: '100%',
   },
   profilePhotoPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#8A2BE2',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1236,5 +1425,155 @@ const styles = StyleSheet.create({
   reviewDate: {
     fontSize: 12,
     color: '#666',
+  },
+  navbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingTop: 48,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  navbarRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  iconButton: {
+    padding: 8,
+  },
+  iconContainer: {
+    position: 'relative',
+    width: 40,
+    height: 40,
+    backgroundColor: '#F0E6FF',
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#8A2BE2',
+    borderRadius: 12,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  badgeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  notificationsDropdown: {
+    position: 'absolute',
+    top: 100, // navbar'ın altında
+    right: 10,
+    width: 300,
+    maxHeight: 400,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 1000,
+  },
+  notificationItem: {
+    flexDirection: 'row',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    alignItems: 'center',
+  },
+  unreadNotification: {
+    backgroundColor: '#f8f4ff',
+  },
+  notificationPhoto: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 12,
+  },
+  notificationContent: {
+    flex: 1,
+  },
+  notificationText: {
+    fontSize: 13,
+    color: '#333',
+  },
+  notificationSender: {
+    fontWeight: 'bold',
+    fontSize: 14,
+    marginBottom: 2,
+  },
+  seeAllButton: {
+    padding: 12,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  seeAllText: {
+    color: '#8A2BE2',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyNotifications: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  emptyText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  signInButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0E6FF',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginLeft: 'auto', // Sağa yasla
+  },
+  signInButtonText: {
+    color: '#8A2BE2',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  unreadBadge: {
+    backgroundColor: '#8A2BE2',
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  unreadCount: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
   },
 }); 
