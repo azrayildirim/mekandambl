@@ -239,11 +239,11 @@ export default function NearbyPlaces() {
     });
   };
 
-  const handleMessage = (user: User) => {
+  const handleMessage = async (user: User) => {
     if (!auth.currentUser) {
       showAlert(
         'Oturum Gerekli',
-        'Mesaj göndermek için mekanda oturum açmalısınız.',
+        'Mesaj göndermek için oturum açmalısınız.',
         'warning'
       );
       return;
@@ -267,8 +267,23 @@ export default function NearbyPlaces() {
       return;
     }
 
-    // Mesajlaşma sayfasına yönlendir
-    // navigation.navigate('Chat', { userId: user.id });
+    try {
+      // Sohbet ID'sini oluştur (küçük ID önce)
+      const chatId = [auth.currentUser.uid, user.id].sort().join('_');
+      
+      // ChatRoom ekranına yönlendir
+      navigation.navigate('ChatRoom', {
+        chatId,
+        userId: user.id
+      });
+    } catch (error) {
+      console.error('Error navigating to chat:', error);
+      showAlert(
+        'Hata',
+        'Mesajlaşma başlatılırken bir hata oluştu.',
+        'error'
+      );
+    }
   };
 
   const handleLocationUpdate = async (newLocation: Location.LocationObject) => {
@@ -442,36 +457,37 @@ export default function NearbyPlaces() {
   // Auth state'ini dinle
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        // Kullanıcı çıkış yaptığında
-        try {
-          // Aktif mekan varsa temizle
-          if (activePlace) {
-            await updateActivePlaceUsers(activePlace, '', false); // activePlace zaten string
+      if (user) {
+        // Kullanıcı giriş yaptığında
+        if (location) {
+          // Mevcut konumu kullanarak mekan kontrolü yap
+          const nearbyPlaces = await updateUserLocation(
+            user.uid,
+            {
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            }
+          );
+
+          // Reddedilmemiş ilk mekanı bul
+          const nextPlace = nearbyPlaces.find(place => 
+            !rejectedPlaces.has(place.id)
+          );
+
+          if (nextPlace) {
+            setNearbyPlaceToConfirm(nextPlace);
           }
-          
-          // Tüm state'leri sıfırla
-          setActivePlace(null);
-          setLastConfirmTime(0);
-          setHasConfirmedOnce(false);
-          setCurrentUser(null);
-          
-          // AsyncStorage'ı temizle
-          await AsyncStorage.multiRemove([ACTIVE_PLACE_KEY, LAST_CONFIRM_KEY]);
-        } catch (error) {
-          console.error('Error cleaning up user data:', error);
         }
+      } else {
+        // Kullanıcı çıkış yaptığında
+        setNearbyPlaceToConfirm(null);
+        setRejectedPlaces(new Set());
+        setHasConfirmedOnce(false);
       }
     });
 
-    return () => {
-      if (activePlace) {
-        updateActivePlaceUsers(activePlace, auth.currentUser?.uid || '', false)
-          .catch(error => console.error('Error cleaning up active place:', error));
-      }
-      unsubscribeAuth();
-    };
-  }, [activePlace]);
+    return () => unsubscribeAuth();
+  }, [location]); // location değiştiğinde de kontrol et
 
   // Mekan durumunu kontrol et
   useEffect(() => {
@@ -861,7 +877,7 @@ export default function NearbyPlaces() {
             latitude: location.coords.latitude,
             longitude: location.coords.longitude,
           }}
-          title="Benim Konumum"
+          title={`Benim Konumum: ${location.coords.latitude}, ${location.coords.longitude}`}
           pinColor="blue"
         />
 
@@ -951,15 +967,15 @@ export default function NearbyPlaces() {
                 <TouchableOpacity 
                   style={[
                     styles.messageButton,
-                    (!user.allowMessages || !user.isOnline) && styles.messageButtonDisabled
+                    (!user.isOnline || !user.allowMessages) && styles.messageButtonDisabled
                   ]}
                   onPress={() => handleMessage(user)}
-                  disabled={!user.allowMessages || !user.isOnline}
+                  disabled={!user.isOnline || !user.allowMessages}
                 >
                   <Ionicons 
-                    name="chatbubble-ellipses" 
+                    name="chatbubble-outline" 
                     size={24} 
-                    color={(!user.allowMessages || !user.isOnline) ? '#9e9e9e' : 'white'} 
+                    color="white" 
                   />
                 </TouchableOpacity>
               </View>

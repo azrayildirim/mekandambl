@@ -8,6 +8,7 @@ import ProfileScreen from '../screens/ProfileScreen';
 import PlaceDetailsScreen from '../screens/PlaceDetailsScreen';
 import NotificationsScreen from '../screens/NotificationsScreen';
 import MessagesScreen from '../screens/MessagesScreen';
+import ChatRoomScreen from '../screens/ChatRoomScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -56,6 +57,15 @@ const AppNavigator = () => {
           title: 'Mesajlar',
           headerShown: true,
           headerBackTitle: 'Geri'
+        }}
+      />
+      <Stack.Screen 
+        name="ChatRoom" 
+        component={ChatRoomScreen}
+        options={{
+          headerShown: true,
+          headerBackTitle: 'Geri',
+          title: 'Sohbet'
         }}
       />
     </Stack.Navigator>

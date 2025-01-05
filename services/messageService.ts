@@ -1,4 +1,4 @@
-import { collection, query, where, orderBy, addDoc, onSnapshot, doc, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, addDoc, onSnapshot, doc, updateDoc, arrayUnion, getDoc, setDoc, increment, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 
 export interface Message {
@@ -29,45 +29,46 @@ export interface Chat {
 // Yeni mesaj gönder
 export const sendMessage = async (senderId: string, receiverId: string, text: string) => {
   try {
-    const chatQuery = query(
-      collection(db, 'chats'),
-      where('participants', 'array-contains', senderId)
-    );
+    // Sohbet ID'sini oluştur (küçük ID önce)
+    const chatId = [senderId, receiverId].sort().join('_');
     
-    const chatSnapshot = await getDoc(doc(db, `chats/${senderId}_${receiverId}`));
-    let chatId = chatSnapshot.exists() ? chatSnapshot.id : `${senderId}_${receiverId}`;
+    // Önce sohbetin var olup olmadığını kontrol et
+    const chatRef = doc(db, 'chats', chatId);
+    const chatDoc = await getDoc(chatRef);
 
-    if (!chatSnapshot.exists()) {
-      await addDoc(collection(db, 'chats'), {
+    // Sohbet yoksa yeni sohbet oluştur
+    if (!chatDoc.exists()) {
+      await setDoc(chatRef, {
         id: chatId,
         participants: [senderId, receiverId],
-        createdAt: Date.now(),
+        createdAt: serverTimestamp(),
         lastMessage: {
           text,
           senderId,
-          createdAt: Date.now()
+          createdAt: serverTimestamp()
         },
         unreadCount: 1
       });
+    } else {
+      // Sohbet varsa son mesajı güncelle
+      await updateDoc(chatRef, {
+        lastMessage: {
+          text,
+          senderId,
+          createdAt: serverTimestamp()
+        },
+        unreadCount: increment(1)
+      });
     }
 
+    // Mesajı ekle
     await addDoc(collection(db, 'messages'), {
       chatId,
       senderId,
       receiverId,
       text,
-      createdAt: Date.now(),
+      createdAt: serverTimestamp(),
       read: false
-    });
-
-    // Son mesajı güncelle
-    await updateDoc(doc(db, 'chats', chatId), {
-      lastMessage: {
-        text,
-        senderId,
-        createdAt: Date.now()
-      },
-      unreadCount: arrayUnion(1)
     });
 
   } catch (error) {

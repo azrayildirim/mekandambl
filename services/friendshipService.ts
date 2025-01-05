@@ -1,6 +1,6 @@
 import { db } from '../config/firebase';
 import { doc, getDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { createNotification } from './notificationService';
+import { addNotification } from './notificationService';
 
 export interface FriendshipStatus {
   areFriends: boolean;
@@ -10,36 +10,29 @@ export interface FriendshipStatus {
 
 export const sendFriendRequest = async (senderId: string, receiverId: string) => {
   try {
+    // Arkadaşlık isteği gönder
     const receiverRef = doc(db, 'users', receiverId);
     await updateDoc(receiverRef, {
-      friendRequests: arrayUnion({
-        userId: senderId,
-        timestamp: new Date().toISOString()
-      })
+      friendRequests: arrayUnion(senderId)
     });
 
-    const senderRef = doc(db, 'users', senderId);
-    await updateDoc(senderRef, {
-      sentRequests: arrayUnion({
-        userId: receiverId,
-        timestamp: new Date().toISOString()
-      })
-    });
-
-    // Bildirim oluştur
+    // Kullanıcı bilgilerini al
     const senderDoc = await getDoc(doc(db, 'users', senderId));
     const senderData = senderDoc.data();
 
-    await createNotification({
+    // Bildirim gönder
+    await addNotification({
+      userId: receiverId,
       type: 'FRIEND_REQUEST',
-      senderId,
+      senderId: senderId,
       senderName: senderData?.name || 'İsimsiz Kullanıcı',
-      senderPhoto: senderData?.photoURL,
-      receiverId,
-      data: {
-        message: 'size arkadaşlık isteği gönderdi'
-      }
+      senderPhoto: senderData?.photoURL || null,
+      message: 'size arkadaşlık isteği gönderdi',
+      read: false,
+      createdAt: new Date().toISOString()
     });
+
+    return true;
   } catch (error) {
     console.error('Error sending friend request:', error);
     throw error;
@@ -68,16 +61,33 @@ export const acceptFriendRequest = async (userId: string, friendId: string) => {
     const userRef = doc(db, 'users', userId);
     const friendRef = doc(db, 'users', friendId);
 
-    // Her iki kullanıcının arkadaş listesini güncelle
+    // Kullanıcı bilgilerini al
+    const userDoc = await getDoc(userRef);
+    const userData = userDoc.data();
+
+    // İsteği kaldır ve arkadaş listesine ekle
     await updateDoc(userRef, {
-      friends: arrayUnion(friendId),
-      friendRequests: arrayRemove({ userId: friendId })
+      friendRequests: arrayRemove(friendId),
+      friends: arrayUnion(friendId)
     });
 
     await updateDoc(friendRef, {
-      friends: arrayUnion(userId),
-      sentRequests: arrayRemove({ userId })
+      friends: arrayUnion(userId)
     });
+
+    // Kabul bildirimini gönder
+    await addNotification({
+      userId: friendId,
+      type: 'FRIEND_ACCEPTED',
+      senderId: userId,
+      senderName: userData?.name || 'İsimsiz Kullanıcı',
+      senderPhoto: userData?.photoURL || null,
+      message: 'arkadaşlık isteğinizi kabul etti',
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+
+    return true;
   } catch (error) {
     console.error('Error accepting friend request:', error);
     throw error;
