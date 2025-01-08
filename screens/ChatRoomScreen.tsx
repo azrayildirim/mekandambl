@@ -1,18 +1,74 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform } from 'react-native';
-import { useRoute, RouteProp } from '@react-navigation/native';
+import { View, Text, StyleSheet, FlatList, TextInput, TouchableOpacity, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
 import { RootStackParamList } from '../types/navigation';
-import { Message, subscribeToMessages, sendMessage } from '../services/messageService';
-import { auth } from '../config/firebase';
+import { Message, subscribeToMessages, sendMessage, markMessagesAsRead } from '../services/messageService';
+import { auth, db } from '../config/firebase';
 import { Ionicons } from '@expo/vector-icons';
+import { doc, getDoc } from 'firebase/firestore';
 
 type ChatRoomRouteProp = RouteProp<RootStackParamList, 'ChatRoom'>;
 
+const formatMessageTime = (timestamp: any) => {
+  if (timestamp?.seconds) {
+    const date = new Date(timestamp.seconds * 1000);
+    return date.toLocaleTimeString('tr-TR', { 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+  }
+  if (timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('tr-TR', { 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+  }
+  return '';
+};
+
 export default function ChatRoomScreen() {
   const route = useRoute<ChatRoomRouteProp>();
+  const navigation = useNavigation();
   const { chatId, userId } = route.params;
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
+  const [otherUser, setOtherUser] = useState<{
+    name: string;
+    photoURL: string | null;
+  } | null>(null);
+
+  // Diğer kullanıcının bilgilerini al
+  useEffect(() => {
+    const loadUserData = async () => {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', userId));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          setOtherUser({
+            name: userData.name,
+            photoURL: userData.photoURL
+          });
+          // Header'ı güncelle
+          navigation.setOptions({
+            headerTitle: () => (
+              <View style={styles.headerTitle}>
+                <Image 
+                  source={{ uri: userData.photoURL || undefined }}
+                  style={styles.headerPhoto}
+                  defaultSource={require('../assets/images/default-avatar.png')}
+                />
+                <Text style={styles.headerName}>{userData.name}</Text>
+              </View>
+            )
+          });
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error);
+      }
+    };
+    loadUserData();
+  }, [userId]);
 
   useEffect(() => {
     const unsubscribe = subscribeToMessages(chatId, (updatedMessages) => {
@@ -21,6 +77,18 @@ export default function ChatRoomScreen() {
 
     return () => unsubscribe();
   }, [chatId]);
+
+  useEffect(() => {
+    if (!auth.currentUser || !chatId) return;
+
+    const unreadMessages = messages.filter(
+      msg => msg.senderId !== auth.currentUser?.uid && !msg.read
+    );
+
+    if (unreadMessages.length > 0) {
+      markMessagesAsRead(chatId, auth.currentUser.uid);
+    }
+  }, [messages, chatId]);
 
   const handleSend = async () => {
     if (!newMessage.trim() || !auth.currentUser) return;
@@ -47,7 +115,35 @@ export default function ChatRoomScreen() {
             styles.messageContainer,
             item.senderId === auth.currentUser?.uid ? styles.sentMessage : styles.receivedMessage
           ]}>
-            <Text style={styles.messageText}>{item.text}</Text>
+            <Text style={[
+              styles.messageText,
+              item.senderId === auth.currentUser?.uid ? styles.sentMessageText : styles.receivedMessageText
+            ]}>
+              {item.text}
+            </Text>
+            <View style={styles.messageFooter}>
+              <Text style={styles.messageTime}>
+                {formatMessageTime(item.createdAt)}
+              </Text>
+              {item.senderId === auth.currentUser?.uid && (
+                <View style={styles.checkContainer}>
+                  <Ionicons 
+                    name="checkmark" 
+                    size={16} 
+                    color={item.read ? "#FFB6C1" : "#fff"}
+                    style={[styles.checkmark, styles.firstCheck]}
+                  />
+                  {item.read && (
+                    <Ionicons 
+                      name="checkmark" 
+                      size={16} 
+                      color="#FFB6C1"
+                      style={[styles.checkmark, styles.secondCheck]}
+                    />
+                  )}
+                </View>
+              )}
+            </View>
           </View>
         )}
         keyExtractor={item => item.id}
@@ -89,7 +185,7 @@ const styles = StyleSheet.create({
   },
   receivedMessage: {
     alignSelf: 'flex-start',
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#666',
   },
   messageText: {
     fontSize: 16,
@@ -119,5 +215,53 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f0f0f0',
+  },
+  headerTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerPhoto: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  headerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
+  sentMessageText: {
+    color: '#fff',
+  },
+  receivedMessageText: {
+    color: '#fff',
+  },
+  messageFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    marginTop: 4,
+  },
+  messageTime: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginRight: 4,
+  },
+  checkContainer: {
+    flexDirection: 'row',
+    width: 16,
+    height: 16,
+    marginLeft: 2,
+    position: 'relative',
+  },
+  checkmark: {
+    position: 'absolute',
+  },
+  firstCheck: {
+    left: 0,
+  },
+  secondCheck: {
+    left: -4,
   },
 }); 

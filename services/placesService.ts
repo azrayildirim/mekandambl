@@ -274,15 +274,20 @@ export const updateUserLocation = async (
 // Kullanıcının gittiği mekanları kaydet
 export const addVisitedPlace = async (userId: string, placeId: string) => {
   try {
+    // Kullanıcının visitedPlaces listesine ekle
     const userRef = doc(db, 'users', userId);
-    const userDoc = await getDoc(userRef);
-    const visitedPlaces = userDoc.data()?.visitedPlaces || [];
-    
-    if (!visitedPlaces.includes(placeId)) {
-      await updateDoc(userRef, {
-        visitedPlaces: [...visitedPlaces, placeId]
-      });
-    }
+    await updateDoc(userRef, {
+      visitedPlaces: arrayUnion(placeId)
+    });
+
+    // placeVisits koleksiyonuna ziyaret kaydı ekle
+    await addDoc(collection(db, 'placeVisits'), {
+      userId,
+      placeId,
+      visitDate: new Date().toISOString()
+    });
+
+    return true;
   } catch (error) {
     console.error('Error adding visited place:', error);
     throw error;

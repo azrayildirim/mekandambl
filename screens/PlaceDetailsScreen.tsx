@@ -231,7 +231,40 @@ export default function PlaceDetailsScreen() {
         </TouchableOpacity>
 
         <View style={styles.content}>
-          <Text style={styles.title}>{place.name}</Text>
+        <View style={styles.titleContainer}>
+  <Text style={styles.title}>{place.name}</Text>
+  {auth.currentUser && isNearby && (
+    <TouchableOpacity 
+      style={[
+        styles.visitedButton,
+        isVisited && styles.visitedButtonDisabled
+      ]}
+      onPress={async () => {
+        if (!auth.currentUser || isVisited) return;
+        try {
+          await addVisitedPlace(auth.currentUser.uid, place.id);
+          setIsVisited(true);
+          Alert.alert('Başarılı', 'Mekan gittiğiniz yerler listesine eklendi');
+        } catch (error) {
+          Alert.alert('Hata', 'Mekan eklenirken bir hata oluştu');
+        }
+      }}
+      disabled={isVisited}
+    >
+      <Ionicons 
+        name={isVisited ? "checkmark-circle" : "add-circle"} 
+        size={16} 
+        color={isVisited ? "#4CAF50" : "#8A2BE2"} 
+      />
+      <Text style={[
+        styles.buttonText,
+        isVisited && styles.buttonTextVisited
+      ]}>
+        {isVisited ? 'Ziyaret Edildi' : 'Ziyaret Et'}
+      </Text>
+    </TouchableOpacity>
+  )}
+</View>
           
           {place.rating && (
             <View style={styles.ratingContainer}>
@@ -337,34 +370,7 @@ export default function PlaceDetailsScreen() {
             ))}
           </View>
 
-          {auth.currentUser && isNearby && (
-            <TouchableOpacity 
-              style={[
-                styles.visitedButton,
-                isVisited && styles.visitedButtonDisabled
-              ]}
-              onPress={async () => {
-                if (!auth.currentUser || isVisited) return;
-                try {
-                  await addVisitedPlace(auth.currentUser.uid, place.id);
-                  setIsVisited(true);
-                  Alert.alert('Başarılı', 'Mekan gittiğiniz yerler listesine eklendi');
-                } catch (error) {
-                  Alert.alert('Hata', 'Mekan eklenirken bir hata oluştu');
-                }
-              }}
-              disabled={isVisited}
-            >
-              <Ionicons 
-                name={isVisited ? "checkmark-circle" : "add-circle"} 
-                size={24} 
-                color="white" 
-              />
-              <Text style={styles.buttonText}>
-                {isVisited ? 'Gittiğiniz Mekan' : 'Mekana Gittim'}
-              </Text>
-            </TouchableOpacity>
-          )}
+     
         </View>
       </ScrollView>
     </View>
@@ -401,11 +407,7 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
+ 
   ratingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -529,25 +531,7 @@ const styles = StyleSheet.create({
     color: '#444',
     lineHeight: 22,
   },
-  visitedButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#4CAF50',
-    padding: 16,
-    borderRadius: 8,
-    marginHorizontal: 20,
-    marginVertical: 10,
-  },
-  visitedButtonDisabled: {
-    backgroundColor: '#A5D6A7',
-  },
-  buttonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
+  
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -557,5 +541,37 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    flex: 1,
+    marginRight: 8,
+  },
+  visitedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: '#F0E6FF',
+  },
+  visitedButtonDisabled: {
+    backgroundColor: '#E8F5E9',
+  },
+  buttonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8A2BE2',
+    marginLeft: 4,
+  },
+  buttonTextVisited: {
+    color: '#4CAF50',
   },
 }); 
