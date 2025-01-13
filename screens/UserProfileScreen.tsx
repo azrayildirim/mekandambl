@@ -9,6 +9,7 @@ import { getPlaceDetails } from '../services/placesService';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
+import { followUser, unfollowUser, checkFollowStatus, getFollowCounts, sendFollowRequest, checkFollowRequestStatus } from '../services/followService';
 
 interface UserProfile {
   id: string;
@@ -39,13 +40,10 @@ interface Place {
 export default function UserProfileScreen({ route }: { route: UserProfileScreenRouteProp }) {
   const { userId } = route.params;
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [friendshipStatus, setFriendshipStatus] = useState<FriendshipStatus>({
-    areFriends: false,
-    isPending: false,
-    isRequestSent: false
-  });
-  const navigation = useNavigation<NavigationProp>();
   const [visitedPlaces, setVisitedPlaces] = useState<Place[]>([]);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followCounts, setFollowCounts] = useState({ followers: 0, following: 0 });
+  const [isRequestPending, setIsRequestPending] = useState(false);
 
   useEffect(() => {
     const loadUserProfile = async () => {
@@ -62,14 +60,7 @@ export default function UserProfileScreen({ route }: { route: UserProfileScreenR
       }
     };
 
-    const loadFriendshipStatus = async () => {
-      if (!auth.currentUser) return;
-      const status = await checkFriendshipStatus(auth.currentUser.uid, userId);
-      setFriendshipStatus(status);
-    };
-
     loadUserProfile();
-    loadFriendshipStatus();
   }, [userId]);
 
   useEffect(() => {
@@ -91,86 +82,85 @@ export default function UserProfileScreen({ route }: { route: UserProfileScreenR
     }
   }, [userProfile]);
 
-  const handleFriendRequest = async () => {
-    if (!auth.currentUser || !userProfile) return;
+  useEffect(() => {
+    const loadFollowStatus = async () => {
+      if (auth.currentUser && userId !== auth.currentUser.uid) {
+        const [followStatus, requestStatus] = await Promise.all([
+          checkFollowStatus(auth.currentUser.uid, userId),
+          checkFollowRequestStatus(auth.currentUser.uid, userId)
+        ]);
+        setIsFollowing(followStatus);
+        setIsRequestPending(requestStatus);
+      }
+    };
 
-    try {
-      await sendFriendRequest(auth.currentUser.uid, userId);
-      setFriendshipStatus(prev => ({
-        ...prev,
-        isPending: true,
-        isRequestSent: true
-      }));
-      Alert.alert('Başarılı', 'Arkadaşlık isteği gönderildi');
-    } catch (error) {
-      console.error('Error sending friend request:', error);
-      Alert.alert('Hata', 'Arkadaşlık isteği gönderilemedi');
-    }
-  };
+    const loadFollowCounts = async () => {
+      const counts = await getFollowCounts(userId);
+      setFollowCounts(counts);
+    };
 
-  const handleAcceptRequest = async () => {
-    if (!auth.currentUser) return;
-    
-    try {
-      await acceptFriendRequest(auth.currentUser.uid, userId);
-      setFriendshipStatus(prev => ({
-        ...prev,
-        areFriends: true,
-        isPending: false
-      }));
-      Alert.alert('Başarılı', 'Arkadaşlık isteği kabul edildi');
-    } catch (error) {
-      console.error('Error accepting friend request:', error);
-      Alert.alert('Hata', 'İstek kabul edilirken bir hata oluştu');
-    }
-  };
+    loadFollowStatus();
+    loadFollowCounts();
+  }, [userId]);
 
-  const handleRejectRequest = async () => {
-    if (!auth.currentUser) return;
-    
-    try {
-      await rejectFriendRequest(auth.currentUser.uid, userId);
-      setFriendshipStatus(prev => ({
-        ...prev,
-        isPending: false
-      }));
-      Alert.alert('Bilgi', 'Arkadaşlık isteği reddedildi');
-    } catch (error) {
-      console.error('Error rejecting friend request:', error);
-      Alert.alert('Hata', 'İstek reddedilirken bir hata oluştu');
-    }
-  };
-
-  const handleRemoveFriend = async () => {
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      Alert.alert('Hata', 'Oturum açmanız gerekiyor');
+  const handleFollowPress = async () => {
+    if (!auth.currentUser) {
+      navigation.navigate('SignIn');
       return;
     }
-    
-    Alert.alert(
-      'Arkadaşı Sil',
-      'Bu kişiyi arkadaş listenizden silmek istediğinize emin misiniz?',
-      [
-        { text: 'İptal', style: 'cancel' },
-        {
-          text: 'Sil',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await removeFriend(currentUser.uid, userId);
-              setFriendshipStatus(prev => ({
-                ...prev,
-                areFriends: false
-              }));
-            } catch (error) {
-              console.error('Error removing friend:', error);
-              Alert.alert('Hata', 'Arkadaş silinirken bir hata oluştu');
-            }
-          }
-        }
-      ]
-    );
+
+    try {
+      if (isFollowing) {
+        await unfollowUser(auth.currentUser.uid, userId);
+        setIsFollowing(false);
+      } else {
+        await sendFollowRequest(auth.currentUser.uid, userId);
+        setIsRequestPending(true);
+      }
+      const newCounts = await getFollowCounts(userId);
+      setFollowCounts(newCounts);
+    } catch (error) {
+      console.error('Follow action failed:', error);
+    }
+  };
+
+  const canSeeVisitedPlaces = () => {
+    if (auth.currentUser?.uid === userId) return true;
+    return isFollowing;
+  };
+
+  const renderFollowButton = () => {
+    if (isFollowing) {
+      return (
+        <TouchableOpacity
+          style={[styles.followButton, styles.followingButton]}
+          onPress={handleFollowPress}
+        >
+          <Ionicons name="checkmark-circle" size={20} color="white" />
+          <Text style={styles.followButtonText}>Takip Ediliyor</Text>
+        </TouchableOpacity>
+      );
+    } else if (isRequestPending) {
+      return (
+        <TouchableOpacity
+          style={[styles.followButton, styles.pendingButton]}
+          disabled={true}
+        >
+          <Ionicons name="time" size={20} color="white" />
+          <Text style={styles.followButtonText}>İstek Gönderildi</Text>
+        </TouchableOpacity>
+      );
+    } else {
+      return (
+        <TouchableOpacity
+          style={styles.followButton}
+          onPress={handleFollowPress}
+        >
+          <Ionicons name="add-circle-outline" size={20} color="white" />
+          <Text style={styles.followButtonText}>Takip Et</Text>
+        </TouchableOpacity>
+      );
+    }
   };
 
   if (!userProfile) {
@@ -190,58 +180,45 @@ export default function UserProfileScreen({ route }: { route: UserProfileScreenR
           defaultSource={require('../assets/images/default-avatar.png')}
         />
         <Text style={styles.name}>{userProfile.name}</Text>
-        <Text style={styles.status}>{userProfile.status}</Text>
-
-        {auth.currentUser?.uid !== userId && (
-          <View style={styles.friendshipButtons}>
-            {friendshipStatus.areFriends ? (
-              <TouchableOpacity 
-                style={[styles.friendButton, styles.friendButtonActive]}
-                onPress={handleRemoveFriend}
-              >
-                <Ionicons name="people" size={24} color="white" />
-                <Text style={styles.friendButtonText}>Arkadaşsınız</Text>
-              </TouchableOpacity>
-            ) : friendshipStatus.isPending && !friendshipStatus.isRequestSent ? (
-              <View style={styles.requestButtons}>
-                <TouchableOpacity 
-                  style={[styles.friendButton, styles.acceptButton]}
-                  onPress={handleAcceptRequest}
-                >
-                  <Ionicons name="checkmark" size={24} color="white" />
-                  <Text style={styles.friendButtonText}>Kabul Et</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.friendButton, styles.rejectButton]}
-                  onPress={handleRejectRequest}
-                >
-                  <Ionicons name="close" size={24} color="white" />
-                  <Text style={styles.friendButtonText}>Reddet</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity 
-                style={[styles.friendButton, friendshipStatus.isRequestSent && styles.friendButtonPending]}
-                onPress={handleFriendRequest}
-                disabled={friendshipStatus.isRequestSent}
-              >
-                <Ionicons 
-                  name={friendshipStatus.isRequestSent ? "time" : "person-add"}
-                  size={24} 
-                  color="white" 
-                />
-                <Text style={styles.friendButtonText}>
-                  {friendshipStatus.isRequestSent ? 'İstek Gönderildi' : 'Arkadaş Ekle'}
-                </Text>
-              </TouchableOpacity>
-            )}
+        
+        <View style={styles.statsContainer}>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{visitedPlaces.length}</Text>
+            <Text style={styles.statLabel}>Mekan</Text>
           </View>
-        )}
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{followCounts.followers}</Text>
+            <Text style={styles.statLabel}>Takipçi</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={styles.statNumber}>{followCounts.following}</Text>
+            <Text style={styles.statLabel}>Takip</Text>
+          </View>
+        </View>
+
+        {userId !== auth.currentUser?.uid && renderFollowButton()}
+
+        <Text style={styles.status}>{userProfile.status}</Text>
       </View>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Gittiği Mekanlar</Text>
-        {visitedPlaces.length > 0 ? (
+        {!canSeeVisitedPlaces() ? (
+          <View style={styles.privateContent}>
+            <Ionicons name="lock-closed" size={24} color="#666" />
+            <Text style={styles.privateText}>
+              Bu kullanıcının gittiği mekanları görmek için takip etmeniz gerekiyor
+            </Text>
+            {!isFollowing && userId !== auth.currentUser?.uid && (
+              <TouchableOpacity
+                style={styles.followButtonSmall}
+                onPress={handleFollowPress}
+              >
+                <Text style={styles.followButtonTextSmall}>Takip Et</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : visitedPlaces.length > 0 ? (
           visitedPlaces.map(place => (
             <TouchableOpacity
               key={place.id}
@@ -283,44 +260,73 @@ const styles = StyleSheet.create({
     padding: 20,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: '#fff',
   },
   profilePhoto: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 16,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    marginBottom: 12,
+    borderWidth: 3,
+    borderColor: '#8A2BE2',
   },
   name: {
     fontSize: 24,
     fontWeight: 'bold',
     marginBottom: 8,
+    color: '#1a1a1a',
   },
-  status: {
-    fontSize: 16,
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    paddingVertical: 16,
+    marginVertical: 16,
+    borderRadius: 12,
+    backgroundColor: '#f8f9fa',
+  },
+  statItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statNumber: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1a1a1a',
+  },
+  statLabel: {
+    fontSize: 14,
     color: '#666',
-    marginBottom: 16,
-    textAlign: 'center',
+    marginTop: 4,
   },
-  friendButton: {
+  followButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#8A2BE2',
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 24,
     borderRadius: 25,
-    marginTop: 16,
+    marginVertical: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
-  friendButtonActive: {
+  followingButton: {
     backgroundColor: '#4CAF50',
   },
-  friendButtonPending: {
-    backgroundColor: '#FFA500',
-  },
-  friendButtonText: {
+  followButtonText: {
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  status: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 8,
   },
   section: {
     padding: 20,
@@ -361,18 +367,33 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontStyle: 'italic',
   },
-  friendshipButtons: {
-    marginTop: 16,
+  privateContent: {
+    alignItems: 'center',
+    padding: 20,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    marginTop: 8,
   },
-  requestButtons: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 10,
+  privateText: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 16,
   },
-  acceptButton: {
-    backgroundColor: '#4CAF50',
+  followButtonSmall: {
+    backgroundColor: '#8A2BE2',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginTop: 8,
   },
-  rejectButton: {
-    backgroundColor: '#FF5252',
+  followButtonTextSmall: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pendingButton: {
+    backgroundColor: '#FFA500',
   },
 }); 

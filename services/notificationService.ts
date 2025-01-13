@@ -1,56 +1,116 @@
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, query, where, orderBy, getDocs, updateDoc, doc, serverTimestamp, getDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 
-export interface Notification {
-  id: string;
-  type: 'FRIEND_REQUEST' | 'PLACE_CHECK_IN' | 'PLACE_REVIEW';
-  senderId: string;
-  senderName: string;
-  senderPhoto?: string;
-  receiverId: string;
-  read: boolean;
-  createdAt: number;
-  data: {
-    placeId?: string;
-    placeName?: string;
-    message?: string;
-  };
+export enum NotificationType {
+  FOLLOW_REQUEST = 'FOLLOW_REQUEST',
+  FOLLOW_ACCEPT = 'FOLLOW_ACCEPT',
+  PLACE_VISIT = 'PLACE_VISIT',
+  // ... diğer bildirim tipleri
 }
 
-// Bildirim oluştur
-export const createNotification = async (notification: Omit<Notification, 'id' | 'createdAt'>) => {
+interface Notification {
+  id: string;
+  type: NotificationType;
+  fromUserId: string;
+  toUserId: string;
+  read: boolean;
+  createdAt: Date;
+  data?: any;
+}
+
+// Takip isteği bildirimi gönder
+export const sendFollowRequestNotification = async (fromUserId: string, toUserId: string) => {
   try {
+    console.log('Sending notification...', { fromUserId, toUserId }); // Debug log 1
+
     const notificationsRef = collection(db, 'notifications');
-    await addDoc(notificationsRef, {
-      ...notification,
+    const fromUserDoc = await getDoc(doc(db, 'users', fromUserId));
+    const fromUserData = fromUserDoc.data();
+
+    console.log('User data fetched:', fromUserData); // Debug log 2
+
+    const notificationData = {
+      type: NotificationType.FOLLOW_REQUEST,
+      fromUserId,
+      toUserId,
       read: false,
-      createdAt: Date.now()
-    });
+      createdAt: serverTimestamp(),
+      data: {
+        status: 'pending',
+        fromUserName: fromUserData?.name || 'İsimsiz Kullanıcı',
+        fromUserPhoto: fromUserData?.photoURL || null
+      }
+    };
+
+    console.log('Notification data:', notificationData); // Debug log 3
+
+    const docRef = await addDoc(notificationsRef, notificationData);
+    console.log('Notification created with ID:', docRef.id); // Debug log 4
+
+    return docRef.id;
   } catch (error) {
-    console.error('Error creating notification:', error);
+    console.error('Error sending follow request notification:', error);
     throw error;
   }
 };
 
-// Bildirimleri gerçek zamanlı dinle
-export const subscribeToNotifications = (userId: string, callback: (notifications: Notification[]) => void) => {
-  const notificationsRef = collection(db, 'notifications');
-  const q = query(
-    notificationsRef,
-    where('receiverId', '==', userId),
-    orderBy('createdAt', 'desc')
-  );
+// Takip kabul bildirimi gönder
+export const sendFollowAcceptNotification = async (fromUserId: string, toUserId: string) => {
+  try {
+    const notificationsRef = collection(db, 'notifications');
+    await addDoc(notificationsRef, {
+      type: NotificationType.FOLLOW_ACCEPT,
+      fromUserId,
+      toUserId,
+      read: false,
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Error sending follow accept notification:', error);
+    throw error;
+  }
+};
 
-  return onSnapshot(q, (snapshot) => {
-    const notifications: Notification[] = [];
-    snapshot.forEach((doc) => {
+// Bildirimleri getir
+export const getNotifications = async (userId: string) => {
+  try {
+    console.log('Fetching notifications for user:', userId); // Debug log 1
+
+    const notificationsRef = collection(db, 'notifications');
+    const q = query(
+      notificationsRef,
+      where('toUserId', '==', userId),
+      orderBy('createdAt', 'desc')
+    );
+
+    const snapshot = await getDocs(q);
+    console.log('Found notifications:', snapshot.size); // Debug log 2
+
+    const notifications = [];
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      console.log('Raw notification data:', data); // Debug log 3
+
+      // Timestamp'i düzgün şekilde dönüştür
+      const createdAt = data.createdAt?.toDate?.() || new Date();
+      
       notifications.push({
         id: doc.id,
-        ...doc.data()
-      } as Notification);
-    });
-    callback(notifications);
-  });
+        type: data.type,
+        fromUserId: data.fromUserId,
+        toUserId: data.toUserId,
+        read: data.read || false,
+        createdAt,
+        data: data.data || {}
+      });
+    }
+
+    console.log('Processed notifications:', notifications); // Debug log 4
+    return notifications;
+  } catch (error) {
+    console.error('Error getting notifications:', error);
+    throw error;
+  }
 };
 
 // Bildirimi okundu olarak işaretle
@@ -62,28 +122,6 @@ export const markNotificationAsRead = async (notificationId: string) => {
     });
   } catch (error) {
     console.error('Error marking notification as read:', error);
-    throw error;
-  }
-};
-
-// Tüm bildirimleri okundu olarak işaretle
-export const markAllNotificationsAsRead = async (userId: string) => {
-  try {
-    const notificationsRef = collection(db, 'notifications');
-    const q = query(
-      notificationsRef,
-      where('receiverId', '==', userId),
-      where('read', '==', false)
-    );
-    
-    const snapshot = await getDocs(q);
-    const batch = snapshot.docs.map(doc => 
-      updateDoc(doc.ref, { read: true })
-    );
-    
-    await Promise.all(batch);
-  } catch (error) {
-    console.error('Error marking all notifications as read:', error);
     throw error;
   }
 }; 
