@@ -27,7 +27,13 @@
         "googleMaps": {
           "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"
         }
-      }
+      },
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.azrayildirim.mekanda"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -46,6 +52,11 @@
           "cameraPermission": "Kamera kullanımı için izin gerekiyor."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "5a1532a8-27b2-4cef-9751-55e6abc86d01"
+      }
+    }
   }
 }

@@ -187,4 +187,43 @@ export const markMessagesAsRead = async (chatId: string, userId: string) => {
     console.error('Error marking messages as read:', error);
     throw error;
   }
+};
+
+export const getAllMessages = async (userId: string) => {
+  try {
+    const messagesRef = collection(db, 'messages');
+    const q = firestoreQuery(
+      messagesRef,
+      where('participants', 'array-contains', userId),
+      orderBy('lastMessageTime', 'desc')
+    );
+
+    const snapshot = await getDocs(q);
+    const messages = [];
+
+    for (const doc of snapshot.docs) {
+      const messageData = doc.data();
+      const otherUserId = messageData.participants.find(id => id !== userId);
+      
+      // Diğer kullanıcının bilgilerini al
+      const userDoc = await getDoc(doc(db, 'users', otherUserId));
+      const userData = userDoc.data();
+
+      messages.push({
+        id: doc.id,
+        lastMessage: messageData.lastMessage,
+        lastMessageTime: messageData.lastMessageTime?.toDate(),
+        unreadCount: messageData.unreadCount?.[userId] || 0,
+        otherUserId,
+        otherUserName: userData?.name || 'İsimsiz Kullanıcı',
+        otherUserPhoto: userData?.photoURL || null,
+        otherUserOnline: userData?.isOnline || false
+      });
+    }
+
+    return messages;
+  } catch (error) {
+    console.error('Error getting messages:', error);
+    throw error;
+  }
 }; 

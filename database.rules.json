@@ -1,8 +1,21 @@
 {
   "rules": {
+    "places": {
+      "$placeId": {
+        "visits": {
+          ".indexOn": "timestamp",
+          ".read": true,
+          ".write": "auth != null"
+        },
+        "activeUsers": {
+          ".read": true,
+          ".write": "auth != null"
+        }
+      }
+    },
     "status": {
       "$uid": {
-        ".read": "auth != null",
+        ".read": true,
         ".write": "$uid === auth.uid"
       }
     }

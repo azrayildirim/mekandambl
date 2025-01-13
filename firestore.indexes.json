@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "placeVisits",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "placeId", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    }
+  ]
+} 

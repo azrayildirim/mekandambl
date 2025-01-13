@@ -14,13 +14,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { addVisitedPlace, getPlaceDetails } from '../services/placesService';
+import { addVisitedPlace, getPlaceDetails, getRecentVisitors } from '../services/placesService';
 import { auth, db } from '../config/firebase';
 import { getDoc, doc } from 'firebase/firestore';
 import * as Location from 'expo-location';
 import { RootStackParamList } from '../types/navigation';
-import { ref, onValue } from 'firebase/database';
+import { ref, onValue, query as databaseQuery, orderByChild, startAt, get } from 'firebase/database';
 import { database } from '../config/firebase';
+import { ThemedView } from '../components/ThemedView';
+import { ThemedText } from '../components/ThemedText';
 
 type PlaceDetailsRouteProp = RouteProp<RootStackParamList, 'PlaceDetails'>;
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
@@ -55,6 +57,13 @@ interface Place {
   }>;
 }
 
+interface Visitor {
+  id: string;
+  name: string;
+  photoURL: string;
+  visitDate: string;
+}
+
 export default function PlaceDetailsScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<PlaceDetailsRouteProp>();
@@ -69,6 +78,7 @@ export default function PlaceDetailsScreen() {
     photoURL: string;
     isOnline: boolean;
   }>>([]);
+  const [recentVisitors, setRecentVisitors] = useState<Visitor[]>([]);
 
   // Mekan bilgilerini yükle
   useEffect(() => {
@@ -171,6 +181,19 @@ export default function PlaceDetailsScreen() {
 
     return () => unsubscribe();
   }, [placeId]);
+
+  useEffect(() => {
+    fetchRecentVisitors();
+  }, [placeId]);
+
+  const fetchRecentVisitors = async () => {
+    try {
+      const visitors = await getRecentVisitors(placeId);
+      setRecentVisitors(visitors);
+    } catch (error) {
+      console.error('Ziyaretçiler alınamadı:', error);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -369,6 +392,34 @@ export default function PlaceDetailsScreen() {
               </View>
             ))}
           </View>
+
+          <ThemedView style={styles.visitorsContainer}>
+            <ThemedText style={styles.visitorsTitle}>
+              Son 30 Gün Ziyaretçileri ({recentVisitors.length})
+            </ThemedText>
+            
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {recentVisitors.map((visitor) => (
+                <TouchableOpacity
+                  key={visitor.id}
+                  style={styles.visitorCard}
+                  onPress={() => navigation.navigate('UserProfileScreen', { userId: visitor.id })}
+                >
+                  <Image
+                    source={{ uri: visitor.photoURL }}
+                    defaultSource={require('../assets/images/default-avatar.png')}
+                    style={styles.visitorPhoto}
+                  />
+                  <ThemedText style={styles.visitorName} numberOfLines={1}>
+                    {visitor.name}
+                  </ThemedText>
+                  <ThemedText style={styles.visitDate}>
+                    {visitor.visitDate}
+                  </ThemedText>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </ThemedView>
 
      
         </View>
@@ -573,5 +624,34 @@ const styles = StyleSheet.create({
   },
   buttonTextVisited: {
     color: '#4CAF50',
+  },
+  visitorsContainer: {
+    padding: 16,
+    marginTop: 16,
+  },
+  visitorsTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 16,
+  },
+  visitorCard: {
+    alignItems: 'center',
+    marginRight: 16,
+    width: 80,
+  },
+  visitorPhoto: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    marginBottom: 8,
+  },
+  visitorName: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  visitDate: {
+    fontSize: 12,
+    color: '#666',
   },
 }); 

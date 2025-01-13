@@ -1,5 +1,5 @@
-import { collection, getDocs, query, where, GeoPoint, DocumentData, addDoc, onSnapshot, doc, getDoc, updateDoc, arrayUnion } from 'firebase/firestore';
-import { ref, get, set, serverTimestamp } from 'firebase/database';
+import { collection, getDocs, query as firestoreQuery, where, GeoPoint, DocumentData, addDoc, onSnapshot, doc, getDoc, updateDoc, arrayUnion, setDoc, orderBy, serverTimestamp as firestoreTimestamp } from 'firebase/firestore';
+import { ref, get, set, serverTimestamp, query as databaseQuery, orderByChild, startAt, update } from 'firebase/database';
 import { db, database } from '../config/firebase';
 import { Place, Review, User } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,6 +9,16 @@ export const PLACES_COLLECTION = 'places';
 export const LAST_CONFIRM_KEY = 'lastPlaceConfirm';
 export const ACTIVE_PLACE_KEY = 'activePlaceId';
 export const CONFIRM_COOLDOWN = 30 * 60 * 1000; // 30 dakika
+export const VISITS_COLLECTION = 'placeVisits';
+
+interface VisitData {
+  id: string;
+  timestamp: Date;
+  userId: string;
+  userName: string;
+  photoURL: string | null;
+  placeId: string;
+}
 
 export const getNearbyPlaces = async (userLocation: { latitude: number; longitude: number }) => {
   try {
@@ -264,6 +274,36 @@ export const updateUserLocation = async (
       await AsyncStorage.removeItem(LAST_CONFIRM_KEY);
     }
 
+    // Eğer kullanıcı bir mekandaysa ve yeni teyit yapıldıysa
+    if (userPlaces.length > 0) {
+      const placeId = userPlaces[0]; // En yakın mekan
+      
+      // Kullanıcı bilgilerini al ve ziyaret kaydı oluştur
+      const userDoc = await getDoc(doc(db, 'users', userId));
+      const userData = userDoc.data();
+
+      // Ziyaret kaydını Firestore'a ekle
+      const visitRef = doc(collection(db, VISITS_COLLECTION));
+      await setDoc(visitRef, {
+        placeId,
+        userId,
+        userName: userData?.name || 'İsimsiz Kullanıcı',
+        photoURL: userData?.photoURL || null,
+        timestamp: firestoreTimestamp(),
+        visitDate: new Date().toISOString()
+      });
+
+      // Kullanıcının visitedPlaces listesini güncelle
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        visitedPlaces: arrayUnion(placeId)
+      });
+
+      // Son teyit zamanını güncelle
+      await AsyncStorage.setItem(LAST_CONFIRM_KEY, now.toString());
+      await AsyncStorage.setItem(ACTIVE_PLACE_KEY, placeId);
+    }
+
     return nearbyPlaces;
   } catch (error) {
     console.error('Error checking nearby places:', error);
@@ -274,22 +314,79 @@ export const updateUserLocation = async (
 // Kullanıcının gittiği mekanları kaydet
 export const addVisitedPlace = async (userId: string, placeId: string) => {
   try {
-    // Kullanıcının visitedPlaces listesine ekle
-    const userRef = doc(db, 'users', userId);
-    await updateDoc(userRef, {
-      visitedPlaces: arrayUnion(placeId)
+    // Kullanıcı bilgilerini al
+    const userDoc = await getDoc(doc(db, 'users', userId));
+    const userData = userDoc.data();
+
+    // Ziyaret kaydını Firestore'a ekle
+    const visitRef = doc(collection(db, VISITS_COLLECTION));
+    const timestamp = firestoreTimestamp();
+    
+    await setDoc(visitRef, {
+      placeId,
+      userId,
+      userName: userData?.name || 'İsimsiz Kullanıcı',
+      photoURL: userData?.photoURL || null,
+      timestamp,
+      visitDate: new Date().toISOString()
     });
 
-    // placeVisits koleksiyonuna ziyaret kaydı ekle
-    await addDoc(collection(db, 'placeVisits'), {
-      userId,
-      placeId,
-      visitDate: new Date().toISOString()
+    // Kullanıcının visitedPlaces listesini güncelle
+    const userRef = doc(db, 'users', userId);
+    await updateDoc(userRef, {
+      visitedPlaces: arrayUnion(placeId),
+      lastVisitedPlace: {
+        placeId,
+        timestamp,
+        visitDate: new Date().toISOString()
+      }
     });
 
     return true;
   } catch (error) {
     console.error('Error adding visited place:', error);
+    throw error;
+  }
+};
+
+// Son 30 gün ziyaretçilerini getir
+export const getRecentVisitors = async (placeId: string) => {
+  try {
+    const visitsRef = collection(db, VISITS_COLLECTION);
+    const visitsQuery = firestoreQuery(
+      visitsRef,
+      where('placeId', '==', placeId)
+    );
+
+    const snapshot = await getDocs(visitsQuery);
+    const visitors = new Map();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    snapshot.docs
+      .map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+        timestamp: doc.data().timestamp?.toDate() || new Date(doc.data().visitDate)
+      } as VisitData))
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .forEach(data => {
+        if (data.timestamp >= thirtyDaysAgo && !visitors.has(data.userId)) {
+          visitors.set(data.userId, {
+            id: data.userId,
+            name: data.userName,
+            photoURL: data.photoURL,
+            visitDate: data.timestamp.toLocaleDateString('tr-TR', {
+              month: 'long',
+              day: 'numeric'
+            })
+          });
+        }
+      });
+
+    return Array.from(visitors.values());
+  } catch (error) {
+    console.error('Error fetching visitors:', error);
     throw error;
   }
 };
@@ -339,4 +436,23 @@ const calculateNewRating = async (placeId: string, newRating: number) => {
   const currentRating = placeDoc.data()?.rating || 0;
 
   return ((currentRating * totalRatings) + newRating) / (totalRatings + 1);
+};
+
+export const recordVisit = async (placeId: string, userId: string) => {
+  try {
+    const visitsRef = ref(database, `places/${placeId}/visits/${userId}`);
+    const snapshot = await get(visitsRef);
+    
+    // Ziyaret kaydını güncelle veya oluştur
+    await set(visitsRef, {
+      timestamp: Date.now(),
+      userId,
+      lastVisit: new Date().toISOString()
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Ziyaret kaydedilemedi:', error);
+    throw error;
+  }
 }; 
